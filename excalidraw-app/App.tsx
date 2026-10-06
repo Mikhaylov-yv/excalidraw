@@ -122,7 +122,7 @@ import {
   importUsernameFromLocalStorage,
 } from "./data/localStorage";
 
-import { loadFilesFromFirebase } from "./data/firebase";
+import { loadFilesFromStorage } from "./data/storage";
 import {
   LibraryIndexedDBAdapter,
   LibraryLocalStorageMigrationAdapter,
@@ -513,7 +513,7 @@ const ExcalidrawWrapper = () => {
               fileIds.map((id) => [id, "loading"]),
             );
           }
-          loadFilesFromFirebase(
+          loadFilesFromStorage(
             `${FIREBASE_STORAGE_PREFIXES.shareLinkFiles}/${data.id}`,
             data.key,
             fileIds,

@@ -76,16 +76,16 @@ import {
 import { FileStatusStore } from "../data/fileStatusStore";
 import { LocalData } from "../data/LocalData";
 import {
-  isSavedToFirebase,
-  loadFilesFromFirebase,
-  loadFromFirebase,
-  saveFilesToFirebase,
-  saveToFirebase,
-} from "../data/firebase";
-import {
   importUsernameFromLocalStorage,
   saveUsernameToLocalStorage,
 } from "../data/localStorage";
+import {
+  isSavedToStorage,
+  loadFilesFromStorage,
+  loadFromStorage,
+  saveFilesToStorage,
+  saveToStorage,
+} from "../data/storage";
 import { resetBrowserStateVersions } from "../data/tabSync";
 
 import { collabErrorIndicatorAtom } from "./CollabError";
@@ -162,7 +162,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
           throw new AbortError();
         }
 
-        return loadFilesFromFirebase(`files/rooms/${roomId}`, roomKey, fileIds);
+        return loadFilesFromStorage(`files/rooms/${roomId}`, roomKey, fileIds);
       },
       saveFiles: async ({ addedFiles }) => {
         const { roomId, roomKey } = this.portal;
@@ -170,7 +170,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
           throw new AbortError();
         }
 
-        const { savedFiles, erroredFiles } = await saveFilesToFirebase({
+        const { savedFiles, erroredFiles } = await saveFilesToStorage({
           prefix: `${FIREBASE_STORAGE_PREFIXES.collabFiles}/${roomId}`,
           files: await encodeFilesForUpload({
             files: addedFiles,
@@ -304,7 +304,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     if (
       this.isCollaborating() &&
       (this.fileManager.shouldPreventUnload(syncableElements) ||
-        !isSavedToFirebase(this.portal, syncableElements))
+        !isSavedToStorage(this.portal, syncableElements))
     ) {
       // this won't run in time if user decides to leave the site, but
       //  the purpose is to run in immediately after user decides to stay
@@ -325,7 +325,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
   ) => {
     syncableElements = cloneJSON(syncableElements);
     try {
-      const storedElements = await saveToFirebase(
+      const storedElements = await saveToStorage(
         this.portal,
         syncableElements,
         this.excalidrawAPI.getAppState(),
@@ -731,7 +731,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       this.excalidrawAPI.resetScene();
 
       try {
-        const elements = await loadFromFirebase(
+        const elements = await loadFromStorage(
           roomLinkData.roomId,
           roomLinkData.roomKey,
           this.portal.socket,

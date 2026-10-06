@@ -17,6 +17,10 @@ interface ImportMetaEnv {
 
   VITE_APP_FIREBASE_CONFIG: string;
 
+  // if set, collab scenes and files are stored on this HTTP backend
+  // instead of Firebase (self-hosting)
+  VITE_APP_STORAGE_BACKEND_URL: string;
+
   // whether to disable live reload / HMR. Usuaully what you want to do when
   // debugging Service Workers.
   VITE_APP_DEV_DISABLE_LIVE_RELOAD: string;
