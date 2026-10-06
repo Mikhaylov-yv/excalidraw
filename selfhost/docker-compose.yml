@@ -1,0 +1,55 @@
+# Excalidraw with sharing and collaboration, everything on your own machine:
+#
+#   app     the Excalidraw app (static files) + reverse proxy to the server
+#   server  share links, collab rooms and files, stored in the S3
+#   rustfs  the S3 (any S3-compatible storage will do)
+#
+# See README.md.
+
+name: excalidraw-selfhost
+
+services:
+  app:
+    image: ${IMAGE_PREFIX:-excalidraw-selfhost}-app:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: selfhost/app.Dockerfile
+    ports:
+      - "${APP_PORT:-8300}:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  server:
+    image: ${IMAGE_PREFIX:-excalidraw-selfhost}-server:${IMAGE_TAG:-latest}
+    build: ./server
+    environment:
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://rustfs:9000}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-excalidraw}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:1.0.1
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  rustfs-data:

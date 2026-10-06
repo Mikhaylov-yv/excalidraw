@@ -1,0 +1,4 @@
+.env
+node_modules/
+# the server image is built with `npm ci`
+!server/package-lock.json
