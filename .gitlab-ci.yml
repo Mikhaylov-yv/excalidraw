@@ -37,8 +37,16 @@ variables:
 .docker_login: &docker_login
   - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
 
+# Все джобы проекта идут ПО ОДНОЙ (одна resource_group на всех, в том числе между
+# пайплайнами). Раннер контура выкачивает исходники разных джоб в один и тот же каталог
+# /builds/<группа>/<проект>: две джобы разом — и git одной из них падает на чужом
+# .git/index.lock ещё до скриптов.
+.serial: &serial
+  resource_group: builds-dir
+
 # Общая основа node-джоб.
 .node:
+  <<: *serial
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/node:${NODE_VERSION}
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -109,6 +117,7 @@ test-server:
 # (адреса относительные: приложение и сервер живут на одном origin), поэтому образ app
 # от окружения не зависит.
 build-staging:
+  <<: *serial
   stage: build
   needs: []
   before_script:
@@ -134,9 +143,9 @@ build-staging:
 # Образы НЕ собирает — только поднимает то, что собрал build-staging.
 # Удалённый Docker VM по SSH (DOCKER_HOST=ssh://, порт демона наружу не открываем).
 deploy-staging:
+  # Заодно два деплоя на один стенд одновременно не идут — второй ждёт первого.
+  <<: *serial
   stage: deploy
-  # Два деплоя на один стенд одновременно не идут — второй ждёт первого.
-  resource_group: staging
   variables:
     # Образы, которые compose поднимет на VM: ровно то, что собрала кнопка
     # build-staging в этом же пайплайне.
