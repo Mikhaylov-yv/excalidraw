@@ -1,0 +1,32 @@
+# Стенд STAGING: два сервиса self-hosted Excalidraw.
+#   app    — статика приложения + nginx; /api/v2/ и /socket.io/ проксирует на server.
+#   server — ссылки-копии, комнаты и файлы; данные кладёт в S3.
+# S3 здесь не поднимается: сервер ходит в существующий RustFS контура (S3_ENDPOINT).
+#
+# Образы приходят готовыми из реестра (IMAGE_APP и IMAGE_SERVER выставляет джоба
+# deploy-staging, тег staging-latest) — стенд их НЕ собирает, только поднимает то, что
+# собрала стадия build.
+#
+# Значения берутся из .env.staging (в git только .env.staging.example;
+# реальный .env — через CI/CD File-переменную ENV_CONTAINER_EXCALIDRAW_STAGING).
+#
+# Томов нет: своего состояния у стенда нет, всё лежит в S3.
+services:
+  app:
+    image: ${IMAGE_APP}
+    container_name: excalidraw-staging-app
+    restart: unless-stopped
+    ports:
+      - "${EXCALIDRAW_PORT}:80"
+    # Сначала сервер: иначе приложение в первые секунды отвечало бы 502 на запросы к API.
+    depends_on:
+      - server
+
+  server:
+    image: ${IMAGE_SERVER}
+    container_name: excalidraw-staging-server
+    restart: unless-stopped
+    # S3_ENDPOINT, S3_BUCKET, ключи и остальной конфиг сервера — из того же файла,
+    # что и порт для compose.
+    env_file:
+      - .env.staging

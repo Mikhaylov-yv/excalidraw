@@ -1,0 +1,169 @@
+# CI/CD по правилам ФЕСКО (FESCO-rules-development/docs/upload/ci-cd), образец — doc_ocr.
+# Проект собирает ДВА образа self-hosted Excalidraw (каталог selfhost/):
+#   app    — статика приложения + nginx с прокси на server (selfhost/app.Dockerfile);
+#   server — ссылки-копии, комнаты и файлы, данные в S3 (selfhost/server/Dockerfile).
+# БД и миграций нет. S3 (RustFS) в контуре уже есть — стенд к нему только подключается.
+# Окружение одно:
+#   staging — расходуемое превью по кнопке build-staging (любая ветка).
+# Любой push/MR гоняет lint + test; dev- и prod-стендов нет.
+
+stages:
+  - lint
+  - test
+  - build
+  - deploy
+
+default:
+  # Образ идёт через Dependency Proxy группы: напрямую до Docker Hub раннер не дотягивается.
+  # Прокси есть только у групп — в личном пространстве имён этот адрес отдаёт 404.
+  image:
+    name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26.1.0
+    pull_policy: always
+  tags:
+    - shared
+
+variables:
+  # Серверу нужен Node.js 22.18+: TypeScript запускается как есть, без сборки.
+  NODE_VERSION: "22"
+
+# Версия — единый источник правды из selfhost/server/package.json.
+# Иммутабельный тег билда = {version}-{CI_PIPELINE_ID}; плавающий = {env}-latest.
+.version: &version
+  - VERSION=$(grep -m1 '"version"' selfhost/server/package.json | sed -E 's/.*"([^"]+)".*/\1/')
+  - 'echo "Версия проекта: ${VERSION} (pipeline ${CI_PIPELINE_ID})"'
+
+# Вход в реестр — учётными данными самой джобы (их выдаёт GitLab): образы и пушатся,
+# и подтягиваются на VM в пределах джобы, пока её учётные данные действуют.
+.docker_login: &docker_login
+  - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+# Общая основа node-джоб.
+.node:
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/node:${NODE_VERSION}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# Джобы монорепозитория Excalidraw: зависимости ставит yarn из СТРОГО зафиксированного
+# yarn.lock (--frozen-lockfile) — те же версии, что локально и в образе.
+.yarn:
+  extends: .node
+  variables:
+    # Кэш скачанных пакетов — ВНУТРИ проекта: GitLab архивирует в cache: только пути
+    # под $CI_PROJECT_DIR.
+    YARN_CACHE_FOLDER: $CI_PROJECT_DIR/.yarn-cache
+  # Ключ ПОСТОЯННЫЙ, а не по хешу yarn.lock: кэш yarn аддитивен — поменялась одна
+  # библиотека, до-качается только она.
+  cache:
+    key: yarn-cache-node${NODE_VERSION}
+    paths:
+      - .yarn-cache/
+  before_script:
+    - node -v
+    - yarn install --frozen-lockfile --network-timeout 600000
+
+# ============================================================
+# СТАДИЯ lint — prettier, eslint, tsc
+# ============================================================
+# Те же три проверки, что upstream Excalidraw гоняет на каждом PR; каталог selfhost/
+# они тоже покрывают (кроме типов сервера — их проверяет test-server).
+lint:
+  extends: .yarn
+  stage: lint
+  script:
+    - yarn test:other
+    - yarn test:code
+    - yarn test:typecheck
+
+# ============================================================
+# СТАДИЯ test — тесты приложения и сервера (gate качества, любой push/MR)
+# ============================================================
+# Только тесты excalidraw-app/: в них лежит всё, что форк меняет во фронтенде (хранилище
+# по HTTP). Полный набор тестов редактора (~2500) — забота upstream, здесь он не гоняется.
+# Staging от тестов НЕ зависит: build-staging развязан через needs: [] (расходуемое
+# превью катится и при красных тестах).
+test-app:
+  extends: .yarn
+  stage: test
+  script:
+    - yarn test:app --watch=false excalidraw-app/
+
+# Сервер — отдельный npm-проект вне workspaces монорепозитория. Тесты поднимают его на
+# локальном порту с хранилищем в памяти: в сеть и к S3 не ходят.
+test-server:
+  extends: .node
+  stage: test
+  script:
+    - cd selfhost/server
+    - npm ci
+    - npm run typecheck
+    - npm test
+
+# ============================================================
+# СТАДИЯ build — образы STAGING (ручной триггер всего staging-деплоя)
+# ============================================================
+# build-once: образы собираются ЗДЕСЬ, deploy-staging их только подтягивает.
+# Это единственная ручная кнопка: за ней каскадом (on_success → needs) идёт deploy-staging.
+# needs: [] — независим от lint/test.
+# VITE_* приложения зашиты в selfhost/app.Dockerfile и одинаковы для всех окружений
+# (адреса относительные: приложение и сервер живут на одном origin), поэтому образ app
+# от окружения не зависит.
+build-staging:
+  stage: build
+  needs: []
+  before_script:
+    - *version
+    - *docker_login
+  script:
+    # Плавающий staging-latest (его подтягивает compose на VM) + иммутабельный
+    # {version}-{pipeline} для трассировки, какой именно билд сейчас крутится на стенде.
+    - IMM="${VERSION}-${CI_PIPELINE_ID}"
+    - docker build -f selfhost/app.Dockerfile -t "$CI_REGISTRY_IMAGE/app:${IMM}" -t "$CI_REGISTRY_IMAGE/app:staging-latest" .
+    - docker build -t "$CI_REGISTRY_IMAGE/server:${IMM}" -t "$CI_REGISTRY_IMAGE/server:staging-latest" selfhost/server
+    - docker push "$CI_REGISTRY_IMAGE/app:${IMM}"
+    - docker push "$CI_REGISTRY_IMAGE/app:staging-latest"
+    - docker push "$CI_REGISTRY_IMAGE/server:${IMM}"
+    - docker push "$CI_REGISTRY_IMAGE/server:staging-latest"
+  rules:
+    - when: manual
+  allow_failure: false
+
+# ============================================================
+# СТАДИЯ deploy — STAGING: подъём стенда на VM
+# ============================================================
+# Образы НЕ собирает — только поднимает то, что собрал build-staging.
+# Удалённый Docker VM по SSH (DOCKER_HOST=ssh://, порт демона наружу не открываем).
+deploy-staging:
+  stage: deploy
+  # Два деплоя на один стенд одновременно не идут — второй ждёт первого.
+  resource_group: staging
+  variables:
+    # Образы, которые compose поднимет на VM: ровно то, что собрала кнопка
+    # build-staging в этом же пайплайне.
+    IMAGE_APP: $CI_REGISTRY_IMAGE/app:staging-latest
+    IMAGE_SERVER: $CI_REGISTRY_IMAGE/server:staging-latest
+  before_script:
+    # SSH к VM staging для удалённого docker compose. Ключ — File-переменная.
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - cp "$STAGING_SSH_KEY" ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+    - ssh-keyscan -H "$STAGING_VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+    # Логин в реестр ДО переключения на удалённый демон: образы лежат в приватном
+    # registry проекта, и docker-клиент передаёт креды демону VM при pull.
+    - *docker_login
+    - export DOCKER_HOST="ssh://$STAGING_SSH_USER@$STAGING_VM_HOST"
+    - export COMPOSE="docker compose -p excalidraw-staging -f deployment/docker-compose-staging.yaml --env-file deployment/.env.staging"
+  script:
+    # .env стенда — единственный файл с настройками окружения (порт, адрес и ключи S3).
+    - cp "$ENV_CONTAINER_EXCALIDRAW_STAGING" deployment/.env.staging
+    # Явный pull перед up обязателен: тег ПЛАВАЮЩИЙ (staging-latest), у docker на VM
+    # он уже лежит с прошлого деплоя — без pull стенд остался бы на предыдущем билде.
+    - $COMPOSE pull
+    # --wait ждёт healthcheck обоих образов. Сервер до старта проверяет бакет в S3:
+    # неверный адрес или ключи — контейнер не поднимется, и джоба упадёт здесь.
+    # Контейнеры пересоздаются — открытые комнаты на несколько секунд теряют связь
+    # и переподключаются сами; данные лежат в S3 и деплой переживают.
+    - $COMPOSE up -d --remove-orphans --wait --wait-timeout 180
+  needs:
+    - job: build-staging
+  rules:
+    - when: on_success
